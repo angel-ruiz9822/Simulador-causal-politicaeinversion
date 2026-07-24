@@ -3,7 +3,7 @@
 **Innovación Renovable y Transición Energética Baja en Carbono**
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://streamlit.io/cloud)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 
 Herramienta interactiva de simulación de escenarios contrafactuales de política
 pública derivada del artículo *"The Leader's Paradox in Clean Technology:
