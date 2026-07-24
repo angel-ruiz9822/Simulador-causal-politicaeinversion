@@ -1,7 +1,7 @@
 # =============================================================================
 # SIMULADOR CAUSAL DE POLÍTICA PÚBLICA · Streamlit + Streamlit Community Cloud
 # Tesis de Maestría · SNI y Transición Energética Baja en Carbono
-# Autor: Angel A. Ruiz Muñiz — UASLP / SECIHTI
+# Autor: Angel A. Ruiz Muñiz — angel.ruiz9822@gmail.com - UASLP / SECIHTI
 #
 # Migración desde Gradio 4.x a Streamlit 1.38+ conservando:
 #   · Motor causal v11 S3b (θ heterogéneos líder / seguidor por motor)
@@ -49,7 +49,7 @@ st.set_page_config(
         "About": (
             "**Simulador Causal de Política Pública**\n\n"
             "Innovación Renovable y Transición Energética Baja en Carbono.\n\n"
-            "Tesis de Maestría — Angel A. Ramírez Martínez\n"
+            "Tesis de Maestría — Angel A. Ruiz Muñiz - angel.ruiz9822@gmail.com\n"
             "UASLP / SECIHTI"
         ),
     },
@@ -1030,7 +1030,7 @@ HALLAZGOS CENTRALES DE LA TESIS (v11):
 Generado el {datetime.now().strftime('%d de %B de %Y, %H:%M')}
 Simulador Causal — Streamlit Community Cloud
 Tesis de Maestría · SNI y Transición Energética Baja en Carbono
-Autor: Angel A. Ramírez Martínez  ·  UASLP / SECIHTI
+Autor: Angel A. Ruiz Muñiz  ·  UASLP / SECIHTI
 """
         ax_txt.text(0.0, 1.0, summary, transform=ax_txt.transAxes,
                     fontsize=8.5, va="top", ha="left",
@@ -1641,7 +1641,7 @@ st.markdown("""
     Panel FE + Driscoll–Kraay + DML Secuencial ·
     Canal GIDE → Patentes → ShareLC (Preacher &amp; Hayes 2008) ·
     Bootstrap IC 95% · Comparativo 11 países · Análisis sexenal México · PDF export
-    <br><em style="opacity:0.75;">Tesis de Maestría · UASLP / SECIHTI · Angel A. Ramírez Martínez</em>
+    <br><em style="opacity:0.75;">Tesis de Maestría · UASLP / SECIHTI · Angel A. Ruiz Muñiz</em>
   </p>
 </div>
 """, unsafe_allow_html=True)
@@ -2108,6 +2108,6 @@ st.markdown(f"""
 <div class="footer-sim">
   Simulador Causal vFINAL · Streamlit Community Cloud  ·
   Última compilación: {datetime.now().strftime('%d-%m-%Y')}<br>
-  <em>Tesis de Maestría · Angel A. Ramírez Martínez · UASLP / SECIHTI</em>
+  <em>Tesis de Maestría · Angel A. Ruiz Muñiz · angel.ruiz9822@gmail.com · UASLP / SECIHTI</em>
 </div>
 """, unsafe_allow_html=True)
