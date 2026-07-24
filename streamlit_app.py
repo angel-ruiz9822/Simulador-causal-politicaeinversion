@@ -1,7 +1,7 @@
 # =============================================================================
 # SIMULADOR CAUSAL DE POLÍTICA PÚBLICA · Streamlit + Streamlit Community Cloud
 # Tesis de Maestría · SNI y Transición Energética Baja en Carbono
-# Autor: Angel A. Ramírez Martínez — UASLP / SECIHTI
+# Autor: Angel A. Ruiz Muñiz — UASLP / SECIHTI
 #
 # Migración desde Gradio 4.x a Streamlit 1.38+ conservando:
 #   · Motor causal v11 S3b (θ heterogéneos líder / seguidor por motor)
