@@ -2,7 +2,7 @@
 
 **Innovación Renovable y Transición Energética Baja en Carbono**
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://streamlit.io/cloud)
+[![Streamlit App]((https://angelruiz-simulador-causal-politicaeinversion.streamlit.app/))
 
 
 Herramienta interactiva de simulación de escenarios contrafactuales de política
