@@ -1,7 +1,7 @@
 # =============================================================================
 # SIMULADOR CAUSAL DE POLÍTICA PÚBLICA · Streamlit + Streamlit Community Cloud
 # Tesis de Maestría · SNI y Transición Energética Baja en Carbono
-# Autor: Angel A. Ruiz Muñiz — angel.ruiz9822@gmail.com - UASLP / SECIHTI
+# Autor: Angel A. Ruiz Muñiz — UASLP / SECIHTI
 #
 # Migración desde Gradio 4.x a Streamlit 1.38+ conservando:
 #   · Motor causal v11 S3b (θ heterogéneos líder / seguidor por motor)
@@ -38,6 +38,13 @@ import streamlit as st
 warnings.filterwarnings("ignore")
 
 # =============================================================================
+# METADATOS DE VERSIÓN — actualizar en cada release del simulador
+# =============================================================================
+DEPLOY_DATE  = "julio 2026"    # Fecha del despliegue actual (ajustar en push)
+APP_VERSION  = "v1.1"          # Versión semántica del simulador
+GITHUB_URL   = "https://github.com/angelruiz9822/simulador-causal-tesis"
+
+# =============================================================================
 # CONFIGURACIÓN GLOBAL DE STREAMLIT
 # =============================================================================
 st.set_page_config(
@@ -49,7 +56,7 @@ st.set_page_config(
         "About": (
             "**Simulador Causal de Política Pública**\n\n"
             "Innovación Renovable y Transición Energética Baja en Carbono.\n\n"
-            "Tesis de Maestría — Angel A. Ruiz Muñiz - angel.ruiz9822@gmail.com\n"
+            "Tesis de Maestría — Angel A. Ruiz Muñiz\n"
             "UASLP / SECIHTI"
         ),
     },
@@ -565,10 +572,17 @@ def fig_escenario(pais_key, motor_vis, n_years, d_stk_abs, d_shk_abs):
                             label="IC 95% Bootstrap", zorder=5)
             _dif = dif_pp if motor == "M1" else dif_lc
             col_ann = C_SCEN if _dif >= 0 else C_NEG
+            # Fix 2 (feedback Angel 07/2026): anotación con caja blanca redondeada
+            # + offset horizontal mayor para evitar solape con línea de escenario
+            # y truncamiento al bordear el axis derecho.
             ax.annotate(dif_str, xy=(xp[-1], s_plot[-1]),
-                        xytext=(8, 0), textcoords="offset points",
-                        fontsize=9, color=col_ann, fontweight="bold",
-                        va="center")
+                        xytext=(14, 0), textcoords="offset points",
+                        fontsize=9.5, color=col_ann, fontweight="bold",
+                        va="center", ha="left",
+                        bbox=dict(boxstyle="round,pad=0.35",
+                                  facecolor="white", edgecolor=col_ann,
+                                  alpha=0.92, linewidth=1.1),
+                        clip_on=False, zorder=10)
 
         ax.set_ylabel(ylab, fontsize=10)
         ax.set_title(titulo, fontsize=11, fontweight="bold", color="#1b3a4b")
@@ -1671,7 +1685,14 @@ with tab1:
         except ValueError:
             _pais_idx = pais_keys.index("mexico")
         pais_sel_name = st.selectbox(
-            "País", pais_names, index=_pais_idx, key="_pais_widget"
+            "País", pais_names, index=_pais_idx, key="_pais_widget",
+            help=(
+                "Selecciona uno de los 11 países del panel de estudio "
+                "(2007–2024). Al cambiar de país, los valores baseline "
+                "de los sliders se resetean al último dato observado del "
+                "país elegido. Los regímenes líder/seguidor por motor "
+                "también se actualizan automáticamente."
+            ),
         )
         pais_sel_key = pais_keys[pais_names.index(pais_sel_name)]
         if pais_sel_key != st.session_state.pais_key:
@@ -1691,6 +1712,16 @@ with tab1:
             options=motor_keys,
             format_func=lambda k: motor_opts_lbl[k],
             index=_mot_idx, key="_motor_widget",
+            help=(
+                "**M1 · Patentes Renovables** captura la innovación "
+                "tecnológica renovable (IPC/CPC clase Y02). "
+                "**M2 · Share Low-Carbon** captura la fracción de "
+                "electricidad de fuentes bajas en carbono. Ambos motores "
+                "están conectados vía el canal de mediación GIDE → "
+                "Patentes → Share LC (Preacher & Hayes, 2008, γ=0.108). "
+                "Selecciona 'Ambos' para ver la descomposición completa "
+                "de spillovers y contexto macroeconómico."
+            ),
         )
         st.session_state.motor_vis = motor_sel
 
@@ -1702,6 +1733,16 @@ with tab1:
             options=horiz_opts,
             format_func=lambda h: f"{h} año{'s' if h != 1 else ''}",
             index=_h_idx, key="_horiz_widget", horizontal=True,
+            help=(
+                "Número de años que se proyecta hacia adelante desde "
+                "el último dato del panel (2024). "
+                "**1–5 años**: dentro de muestra histórica (T=17). "
+                "**10 años**: fuera de muestra — los θ pueden no ser "
+                "estables, interpretar como escenario ilustrativo, no "
+                "como pronóstico. El efecto acumulado crece linealmente "
+                "en la escala logarítmica, así que horizontes largos "
+                "amplifican efectos que en la realidad podrían saturarse."
+            ),
         )
         st.session_state.horizonte = horiz_sel
 
@@ -1781,6 +1822,19 @@ with tab1:
                     step=float(cs["step"]),
                     key=f"stk_{p}",
                     label_visibility="collapsed",
+                    help=(
+                        f"**Nivel objetivo sostenido de {NOM_PAL[p]}**. "
+                        f"Se mantiene fijo en este valor durante todo el "
+                        f"horizonte de proyección. "
+                        f"Los coeficientes θ del panel son elasticidades "
+                        f"causales estimadas con Panel FE + Driscoll-Kraay "
+                        f"(BW=4). Solo M2-Crédito supera la corrección "
+                        f"Benjamini-Hochberg (p_BH=0.0008***); M1-GIDE es "
+                        f"sugestivo (p_BH=0.074*). La notación LID/SEG "
+                        f"indica el coeficiente aplicado según el país sea "
+                        f"líder o seguidor en el motor (M1 patentes o M2 "
+                        f"descarbonización)."
+                    ),
                 )
 
             with col_shk:
@@ -1805,6 +1859,18 @@ with tab1:
                     step=float(ch["step"]),
                     key=f"shk_{p}",
                     label_visibility="collapsed",
+                    help=(
+                        f"**Impulso puntual de {NOM_PAL[p]}** aplicado "
+                        f"únicamente en el primer año del horizonte. "
+                        f"A diferencia del sostenido (nivel objetivo), el "
+                        f"impulso es un shock de una sola vez (Δ pp del PIB "
+                        f"o Δ mill. USD según la palanca). Los coeficientes "
+                        f"θ_shock provienen del DML Secuencial (Chernozhukov "
+                        f"et al., 2018) — son pooled y direccionalmente "
+                        f"informativos pero con SE mayores que los de largo "
+                        f"plazo. Útil para simular estímulos coyunturales "
+                        f"aislados (paquetes fiscales, transferencias)."
+                    ),
                 )
 
         col_a, col_b = st.columns(2)
@@ -2098,7 +2164,72 @@ exhibe la Paradoja del Líder (Innovation Leader ≠ Decarbonization Leader).
 4. **Un único bootstrap paramétrico**: el IC 95% supone normalidad de los θ.
    La inferencia principal de la tesis se apoya en Driscoll–Kraay, no en el
    bootstrap del simulador — este último es una herramienta de comunicación.
+5. **J-curve capturada estáticamente**: la temporalidad no-lineal de la relación
+   GIDE → Patentes → Share LC (siembra e cosecha diferida en el sentido de
+   Popp, 2002) se aborda cualitativamente en el manuscrito, pero el modelo
+   econométrico la condensa en coeficientes estáticos. Una formalización
+   dinámica mediante Local Projections (Jordà, 2005) o Distributed Lag Models
+   constituye una extensión natural para paneles con T ≥ 25 años.
 """)
+
+    # ─────────────────────────────────────────────────────────────
+    # Bloque "Cómo citar este simulador" — Fix 7 (feedback Angel 07/2026)
+    # ─────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 📚 Cómo citar este simulador")
+
+    st.markdown(
+        """
+Si utilizas este simulador en investigación, docencia, informes técnicos o
+notas de política pública, por favor cita el trabajo en formato **APA 7**:
+"""
+    )
+
+    _cita_apa = (
+        f'Ruiz Muñiz, A. A. ({DEPLOY_DATE.split()[-1]}). '
+        f'*Simulador Causal de Política Pública: Innovación Renovable y '
+        f'Transición Energética Baja en Carbono* [Aplicación web]. '
+        f'Universidad Autónoma de San Luis Potosí — SECIHTI. '
+        f'https://angelruiz-simulador-causal-politicaeinversion.streamlit.app'
+    )
+
+    st.code(_cita_apa, language="text")
+
+    st.markdown(
+        f"""
+**BibTeX** para gestores de referencias (LaTeX, Overleaf, Zotero, Mendeley):
+"""
+    )
+
+    _cita_bib = (
+        "@misc{ramirez2026simulador,\n"
+        "  author       = {Ru{\\'{i}}z Mu\\'{ñ}}{\\'{i}}z, Angel A.},\n"
+        f"  title        = {{Simulador Causal de Pol{{\\'{{i}}}}tica P{{\\'{{u}}}}blica: "
+        "Innovaci{\\'{o}}n Renovable y Transici{\\'{o}}n Energ{\\'{e}}tica}},\n"
+        f"  year         = {{{DEPLOY_DATE.split()[-1]}}},\n"
+        f"  version      = {{{APP_VERSION}}},\n"
+        "  howpublished = {\\url{https://angelruiz-simulador-causal-politicaeinversion.streamlit.app}},\n"
+        "  note         = {Aplicaci{\\'{o}}n Streamlit derivada de tesis de maestr{\\'{i}}a. UASLP/SECIHTI.},\n"
+        "}"
+    )
+
+    st.code(_cita_bib, language="bibtex")
+
+    st.markdown(
+        f"""
+**Repositorio del código fuente:** [{GITHUB_URL}]({GITHUB_URL})
+
+**Artículo asociado:** *"The Leader's Paradox in Clean Technology: Catch-Up
+Returns to Public R&D and Green Crowding-Out Across Heterogeneous Economies"*
+(manuscrito en revisión).
+
+**Datos:** Panel consolidado 2007–2024, 11 economías. Fuentes primarias:
+Banco Mundial (WDI), OECD MSTI, IRENA, Our World in Data. Disponible en el
+archivo `data.csv` del repositorio.
+
+**Licencia del código:** Lease archivo de Licencia.
+"""
+    )
 
 
 # =============================================================================
@@ -2106,8 +2237,8 @@ exhibe la Paradoja del Líder (Innovation Leader ≠ Decarbonization Leader).
 # =============================================================================
 st.markdown(f"""
 <div class="footer-sim">
-  Simulador Causal vFINAL · Streamlit Community Cloud  ·
-  Última compilación: {datetime.now().strftime('%d-%m-%Y')}<br>
-  <em>Tesis de Maestría · Angel A. Ruiz Muñiz · angel.ruiz9822@gmail.com · UASLP / SECIHTI</em>
-</div>
+  Simulador Causal {APP_VERSION} · Streamlit Community Cloud  ·
+  Última actualización: {DEPLOY_DATE}<br>
+  <em>Tesis de Maestría · Angel A. Ruiz Muñiz · UASLP / SECIHTI ·
+  
 """, unsafe_allow_html=True)
