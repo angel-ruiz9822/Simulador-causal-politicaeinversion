@@ -2,8 +2,7 @@
 
 **Innovación Renovable y Transición Energética Baja en Carbono**
 
-[![Streamlit App]((https://angelruiz-simulador-causal-politicaeinversion.streamlit.app/))
-
+https://angelruiz-simulador-causal-politicaeinversion.streamlit.app/
 
 Herramienta interactiva de simulación de escenarios contrafactuales de política
 pública derivada del artículo *"The Leader's Paradox in Clean Technology:
