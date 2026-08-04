@@ -95,18 +95,18 @@ THETA_STK = {
 }
 
 THETA_SHK = {
-    "M1": {
-        "GIDE":    dict(theta=-0.0558, se=0.726, sig="n.s."),
-        "Credito": dict(theta=-0.9539, se=0.436, sig="*"   ),
-        "IED":     dict(theta=-0.0612, se=0.020, sig="***" ),
-        "PagosPI": dict(theta=-0.3032, se=0.148, sig="*"   ),
+    'M1': {
+        'GIDE':    dict(theta=-0.0257, se=0.722, sig='n.s.'),
+        'Credito': dict(theta=-0.8956, se=0.410, sig='*'   ),
+        'IED':     dict(theta=-0.0689, se=0.014, sig='***' ),
+        'PagosPI': dict(theta=-0.2740, se=0.137, sig='*'   ),
     },
-    "M2": {
-        "GIDE":    dict(theta=-1.9203, se=0.702, sig="**"  ),
-        "Credito": dict(theta=-0.8894, se=0.439, sig="*"   ),
-        "IED":     dict(theta=-0.0742, se=0.021, sig="***" ),
-        "PagosPI": dict(theta=-0.3477, se=0.155, sig="**"  ),
-    },
+    'M2': {
+        'GIDE':    dict(theta=-1.5206, se=0.641, sig='**'  ),
+        'Credito': dict(theta=-0.9802, se=0.430, sig='**'  ),
+        'IED':     dict(theta=-0.0626, se=0.017, sig='***' ),
+        'PagosPI': dict(theta=-0.3488, se=0.141, sig='**'  ),
+    }
 }
 
 GAMMA_PPER_LC = 0.1077
