@@ -2202,9 +2202,9 @@ notas de política pública, por favor cita el trabajo en formato **APA 7**:
     )
 
     _cita_bib = (
-        "@misc{ramirez2026simulador,\n"
-        "  author       = {Ru{\\'{i}}z Mu\\'{ñ}}{\\'{i}}z, Angel A.},\n"
-        f"  title        = {{Simulador Causal de Pol{{\\'{{i}}}}tica P{{\\'{{u}}}}blica: "
+        "@misc{ruiz2026simulador,\n"
+        "  author       = {Ruiz Muniz, Angel A.},\n"
+        f"  title        = {{Simulador Causal de Politica Publica: "
         "Innovaci{\\'{o}}n Renovable y Transici{\\'{o}}n Energ{\\'{e}}tica}},\n"
         f"  year         = {{{DEPLOY_DATE.split()[-1]}}},\n"
         f"  version      = {{{APP_VERSION}}},\n"
