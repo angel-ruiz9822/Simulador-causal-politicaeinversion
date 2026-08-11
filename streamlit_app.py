@@ -2128,7 +2128,7 @@ regresión sobre residuos limpios: ε_Y = θ · ε_D + η.
 
 **Capa 3 · Mediación bootstrap (canal GIDE → Patentes → ShareLC).**
 Bootstrap paramétrico Monte Carlo con N=10,000 réplicas siguiendo Preacher &
-Hayes (2008). Efecto indirecto a·b = +0.033 (IC 90% [+0.004, +0.075]).
+Hayes (2008). Efecto indirecto, Bootstrap mediation (a·b = +0.032, mediated share 7.6%, 90% CI including zero)
 
 ### Heterogeneidad Líder / Seguidor
 
