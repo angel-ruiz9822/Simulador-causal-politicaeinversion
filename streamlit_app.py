@@ -1,21 +1,61 @@
 # =============================================================================
+#  app.py — SIMULADOR CAUSAL DE POLÍTICA PÚBLICA (Streamlit)
+#  Repositorio: https://github.com/angelruiz9822/simulador-causal-tesis
+#
+#  INSTRUCCIONES
+#    Copiar TODO el contenido de este archivo, desde la línea siguiente a este
+#    bloque hasta el final, y pegarlo en app.py del repositorio, reemplazando
+#    lo que haya. No hace falta tocar requirements.txt ni data.csv.
+#
+#  Versión del simulador: v1.2 · sobre replication package v1.4.3
+#  Sin cambios respecto a la entrega anterior: la homologación de nombres de
+#  v14.2 afecta al bloque del modelo, no al simulador — sus DataFrames son
+#  internos, no se exportan y no comparten esquema con el pipeline.
+# =============================================================================
+
+# =============================================================================
 # SIMULADOR CAUSAL DE POLÍTICA PÚBLICA · Streamlit + Streamlit Community Cloud
 # Tesis de Maestría · SNI y Transición Energética Baja en Carbono
 # Autor: Angel A. Ruiz Muñiz — UASLP / SECIHTI
 #
 # Migración desde Gradio 4.x a Streamlit 1.38+ conservando:
-#   · Motor causal v11 S3b (θ heterogéneos líder / seguidor por motor)
+#   · Motor causal S3b (θ heterogéneos líder / seguidor por motor)
 #   · Panel FE + Driscoll-Kraay (BW=4) + DML Secuencial + Bootstrap N=2000
 #   · Canal de mediación GIDE → Patentes → ShareLC (γ=0.1077)
 #   · Comparativo multi-país (11 economías del panel)
 #   · Análisis sexenal México (Calderón, Peña Nieto, AMLO, Sheinbaum)
 #   · Exportación a PDF de 3–4 páginas
 #
+# -----------------------------------------------------------------------------
+# CAMBIOS v1.2 — SINCRONIZACIÓN CON EL PIPELINE DEFINITIVO
+#
+# Ningún θ cambia y ninguna función de la interfaz se toca: los sliders, las
+# pestañas, los escenarios sexenales y la exportación a PDF se comportan igual.
+# Lo que se corrige es la inferencia alrededor de los θ, que estaba
+# desincronizada de la sección S3b-LID del pipeline.
+#
+#   [FIX 1] SE del total líder. Se usaba SE_LID = sqrt(SE_SEG² + SE_ADJ²), que
+#     omite 2·Cov(θ_SEG, θ_ADJ). Como la covarianza es negativa en 7 de 8 casos,
+#     esa forma ensancha el intervalo hasta 85% (M1-GIDE: 1.0514 naive contra
+#     0.1555 exacta, un IC 6.8× más ancho). Ahora se leen las SE exactas de
+#     S3b-LID desde la tabla THETA_LID.
+#   [FIX 2] El bootstrap sorteaba θ_SEG y θ_ADJ por separado y los sumaba, lo
+#     cual reproduce la varianza naive. Para países líderes ahora sortea θ_LID
+#     directamente de N(θ_LID, SE_exacta).
+#   [FIX 3] La tabla de parámetros mostraba sig_adj para países líderes; esa es
+#     la significancia del diferencial, no la del coeficiente aplicado. Ahora
+#     muestra la del Wald χ²(1) sobre H0: θ_LID = 0.
+#   [FIX 4] Texto de mediación corregido: a·b = +0.0315, IC 90%
+#     [-0.0002, +0.0774] contiene el cero, 7.6% mediado, sin evidencia de
+#     mediación. Antes se afirmaba lo contrario en la pestaña de metodología.
+#   [+] Se añaden a Limitaciones los resultados de S7 (wild cluster bootstrap)
+#       y de S3b-SENS, y se corrige el asterisco de H3 (θ_LID es ***, no **).
+#
 # Referencias metodológicas centrales:
 #   Driscoll & Kraay (1998); Chernozhukov et al. (2018);
-#   Preacher & Hayes (2008); Abramovitz (1986); Unruh (2000).
+#   Preacher & Hayes (2008); Abramovitz (1986); Unruh (2000);
+#   Cameron, Gelbach & Miller (2008); MacKinnon & Webb (2018).
 # =============================================================================
-
 import os
 import io
 import tempfile
@@ -32,7 +72,6 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.patches as mpatches
 from matplotlib.backends.backend_pdf import PdfPages
-
 import streamlit as st
 
 warnings.filterwarnings("ignore")
@@ -40,8 +79,9 @@ warnings.filterwarnings("ignore")
 # =============================================================================
 # METADATOS DE VERSIÓN — actualizar en cada release del simulador
 # =============================================================================
-DEPLOY_DATE  = "julio 2026"    # Fecha del despliegue actual (ajustar en push)
-APP_VERSION  = "v1.1"          # Versión semántica del simulador
+DEPLOY_DATE  = "septiembre 2026"   # Fecha del despliegue actual (ajustar en push)
+APP_VERSION  = "v1.2"              # Versión semántica del simulador
+PIPELINE_VER = "v1.4.3"            # Replication package que produce los θ
 GITHUB_URL   = "https://github.com/angelruiz9822/simulador-causal-tesis"
 
 # =============================================================================
@@ -62,9 +102,14 @@ st.set_page_config(
     },
 )
 
-
 # =============================================================================
-# A. PARÁMETROS CAUSALES v11 — HETEROGENEIDAD LÍDER / SEGUIDOR
+# A. PARÁMETROS CAUSALES — HETEROGENEIDAD LÍDER / SEGUIDOR
+#
+# Fuente: S3b del pipeline definitivo — Panel FE + SE Driscoll-Kraay (BW = 4).
+#   θ_SEG = efecto en seguidores (coeficiente BASE-SEG)
+#   θ_ADJ = ajuste diferencial líder − seguidor (coeficiente ADJ-LID)
+#   θ_LID = θ_SEG + θ_ADJ, con la varianza EXACTA de S3b-LID:
+#           Var(θ_LID) = Var(θ_SEG) + Var(θ_ADJ) + 2·Cov(θ_SEG, θ_ADJ)
 # =============================================================================
 LIDERES_M1 = {"china", "japon", "estados_unidos", "corea_del_sur",
               "alemania", "francia"}
@@ -94,6 +139,39 @@ THETA_STK = {
     },
 }
 
+# -----------------------------------------------------------------------------
+# [FIX 1] θ_LID exactos — sección S3b-LID del pipeline.
+#   theta    = θ_SEG + θ_ADJ (idéntico a la suma que ya se hacía)
+#   se       = SE exacta con el término de covarianza DK
+#   se_naive = SE que usaba la versión anterior; se conserva solo para poder
+#              documentar de cuánto era el error
+#   sig      = significancia del Wald χ²(1) sobre H0: θ_LID = 0
+# Son los mismos números que sostienen la Figura 2 del artículo.
+# -----------------------------------------------------------------------------
+THETA_LID = {
+    "M1": {
+        "GIDE":    dict(theta=-0.2309, se=0.1555, se_naive=1.0514, cov=-0.5406,
+                        wald= 2.203, pval=0.1377, sig="n.s.", ci=(-0.5357, +0.0740)),
+        "Credito": dict(theta=+0.0531, se=0.2106, se_naive=0.4456, cov=-0.0771,
+                        wald= 0.064, pval=0.8009, sig="n.s.", ci=(-0.3596, +0.4658)),
+        "IED":     dict(theta=-0.1112, se=0.0670, se_naive=0.0849, cov=-0.0014,
+                        wald= 2.755, pval=0.0969, sig="*",    ci=(-0.2425, +0.0201)),
+        "PagosPI": dict(theta=-0.0640, se=0.0931, se_naive=0.2554, cov=-0.0283,
+                        wald= 0.472, pval=0.4923, sig="n.s.", ci=(-0.2465, +0.1186)),
+    },
+    "M2": {
+        "GIDE":    dict(theta=+0.0929, se=0.9177, se_naive=0.8157, cov=+0.0884,
+                        wald= 0.010, pval=0.9194, sig="n.s.", ci=(-1.7057, +1.8915)),
+        "Credito": dict(theta=-1.0811, se=0.2857, se_naive=0.4624, cov=-0.0661,
+                        wald=14.317, pval=0.0002, sig="***",  ci=(-1.6411, -0.5211)),
+        "IED":     dict(theta=-0.0156, se=0.0350, se_naive=0.1381, cov=-0.0089,
+                        wald= 0.198, pval=0.6567, sig="n.s.", ci=(-0.0842, +0.0530)),
+        "PagosPI": dict(theta=-0.1120, se=0.0821, se_naive=0.0971, cov=-0.0014,
+                        wald= 1.863, pval=0.1722, sig="n.s.", ci=(-0.2729, +0.0488)),
+    },
+}
+
+# θ de shocks: DML Secuencial pooled (Capa 2, exploratoria)
 THETA_SHK = {
     'M1': {
         'GIDE':    dict(theta=-0.0257, se=0.722, sig='n.s.'),
@@ -111,6 +189,12 @@ THETA_SHK = {
 
 GAMMA_PPER_LC = 0.1077
 SE_PPER_LC    = 0.0513
+# [FIX 4] S6, mediación (Preacher & Hayes 2008, N = 10,000):
+#   a·b = +0.0315 · IC 95% [-0.0049, +0.0904] · IC 90% [-0.0002, +0.0774]
+#   Ambos intervalos contienen el cero. Proporción mediada 7.6%.
+#   Sobel z = +1.376, p = 0.1688 n.s. → sin evidencia de mediación.
+# El canal se conserva en el motor porque γ es el mejor estimador puntual del
+# tramo b (p = 0.0376), pero el efecto indirecto es sugestivo, no confirmado.
 
 PALANCAS = ["GIDE", "Credito", "IED", "PagosPI"]
 NOM_PAL  = {
@@ -127,17 +211,37 @@ OPCIONES_H = [1, 3, 5, 10]
 
 
 def get_theta_stk(pais: str, motor: str) -> Tuple[Dict, bool]:
+    """Devuelve {palanca: (θ_efectivo, SE_efectivo)} y la bandera es_lider.
+
+    [FIX 1] Para países líderes θ y SE se leen de THETA_LID. El θ es
+    numéricamente idéntico al de la versión anterior (θ_SEG + θ_ADJ); lo que
+    cambia es la SE, y con ella todo intervalo mostrado para países líderes.
+    """
     lid_set  = LIDERES_M1 if motor == "M1" else LIDERES_M2
     es_lider = pais in lid_set
     out = {}
     for p, h in THETA_STK[motor].items():
         if es_lider:
-            theta = h["seg"] + h["adj"]
-            se    = np.sqrt(h["se_seg"] ** 2 + h["se_adj"] ** 2)
+            lid = THETA_LID[motor][p]
+            theta, se = lid["theta"], lid["se"]
         else:
             theta, se = h["seg"], h["se_seg"]
         out[p] = (float(theta), float(se))
     return out, es_lider
+
+
+def get_sig_aplicada(pais: str, motor: str, palanca: str) -> str:
+    """[FIX 3] Significancia del coeficiente que efectivamente se aplica.
+
+    Seguidores: test sobre θ_SEG.
+    Líderes: Wald χ²(1) sobre H0: θ_LID = 0, no la del ajuste diferencial.
+    Mostrar sig_adj para un líder responde a otra pregunta — si el líder difiere
+    del seguidor — y no a si el efecto aplicado se distingue de cero.
+    """
+    lid_set = LIDERES_M1 if motor == "M1" else LIDERES_M2
+    if pais in lid_set:
+        return THETA_LID[motor][palanca]["sig"]
+    return THETA_STK[motor][palanca]["sig_seg"]
 
 
 # =============================================================================
@@ -247,7 +351,6 @@ NOMBRES_PAIS = {
     "dinamarca": "Dinamarca", "estados_unidos": "EE.UU.",
     "francia": "Francia", "japon": "Japón", "mexico": "México",
 }
-
 PAISES_ESTUDIO = set(NOMBRES_PAIS.keys())
 PAISES_DISP    = sorted(p for p in df_raw["pais"].unique() if p in PAISES_ESTUDIO)
 
@@ -357,6 +460,7 @@ def _shk_to_eff_pct(pal, delta_slider, v_base_raw):
 
 def simular(df_p, d_stk, d_shk, n_years, pais_key, n_boot=N_BOOT, seed=42):
     rng = np.random.default_rng(seed)
+
     lp_hist  = np.log1p(df_p[COL_PPER].clip(lower=0).values)
     llc_hist = logit(df_p[COL_SHARE].values)
     lp0 = float(lp_hist[-1]); ll0 = float(llc_hist[-1])
@@ -382,6 +486,7 @@ def simular(df_p, d_stk, d_shk, n_years, pais_key, n_boot=N_BOOT, seed=42):
             )
             lp_i[t] = lp_i[t - 1] + dr_m1
             lp_s[t] = lp_s[t - 1] + dr_m1 + pol1
+
             pol2 = sum(
                 t2[p] * dls[p]
                 + (THETA_SHK["M2"][p]["theta"] * dlsh[p] if is_t1 else 0.0)
@@ -395,25 +500,29 @@ def simular(df_p, d_stk, d_shk, n_years, pais_key, n_boot=N_BOOT, seed=42):
     t2n = {p: th_m2[p][0] for p in PALANCAS}
     lp_i, lp_s, ll_i, ll_s = _run(t1n, t2n, GAMMA_PPER_LC)
 
-    _mu1s = np.array([THETA_STK["M1"][p]["seg"]    for p in PALANCAS])
-    _se1s = np.array([THETA_STK["M1"][p]["se_seg"] for p in PALANCAS])
-    _mu2s = np.array([THETA_STK["M2"][p]["seg"]    for p in PALANCAS])
-    _se2s = np.array([THETA_STK["M2"][p]["se_seg"] for p in PALANCAS])
+    # -------------------------------------------------------------------------
+    # [FIX 2] Bootstrap coherente con la SE exacta.
+    # La versión anterior sorteaba θ_SEG y θ_ADJ de forma independiente y los
+    # sumaba, lo cual implica Var(θ_LID) = Var(SEG) + Var(ADJ): exactamente la
+    # varianza naive que S3b-LID demuestra incorrecta. Para países líderes ahora
+    # se sortea θ_LID directamente de N(θ_LID, SE_exacta). Para seguidores no
+    # hay cambio alguno.
+    # -------------------------------------------------------------------------
+    def _mu_se_boot(motor, es_lider):
+        if es_lider:
+            mu = np.array([THETA_LID[motor][p]["theta"] for p in PALANCAS])
+            se = np.array([THETA_LID[motor][p]["se"]    for p in PALANCAS])
+        else:
+            mu = np.array([THETA_STK[motor][p]["seg"]    for p in PALANCAS])
+            se = np.array([THETA_STK[motor][p]["se_seg"] for p in PALANCAS])
+        return mu, se
+
+    _mu1s, _se1s = _mu_se_boot("M1", es_l1)
+    _mu2s, _se2s = _mu_se_boot("M2", es_l2)
     th1_b = rng.normal(_mu1s, _se1s, (n_boot, len(PALANCAS)))
     th2_b = rng.normal(_mu2s, _se2s, (n_boot, len(PALANCAS)))
-    if es_l1:
-        th1_b += rng.normal(
-            [THETA_STK["M1"][p]["adj"]    for p in PALANCAS],
-            [THETA_STK["M1"][p]["se_adj"] for p in PALANCAS],
-            (n_boot, len(PALANCAS))
-        )
-    if es_l2:
-        th2_b += rng.normal(
-            [THETA_STK["M2"][p]["adj"]    for p in PALANCAS],
-            [THETA_STK["M2"][p]["se_adj"] for p in PALANCAS],
-            (n_boot, len(PALANCAS))
-        )
-    gb_b = rng.normal(GAMMA_PPER_LC, SE_PPER_LC, n_boot)
+    gb_b  = rng.normal(GAMMA_PPER_LC, SE_PPER_LC, n_boot)
+
     blp = np.zeros((n_boot, n_years)); bll = np.zeros((n_boot, n_years))
     for b in range(n_boot):
         _, as_, _, bs = _run(
@@ -542,6 +651,7 @@ def fig_escenario(pais_key, motor_vis, n_years, d_stk_abs, d_shk_abs):
     n_rows = 3 if motor_vis == "AMBOS" else 2
     fig = plt.figure(figsize=(15.5, 4.9 * n_rows), facecolor="#fafafa")
     gspec = gridspec.GridSpec(n_rows, 3, figure=fig, hspace=0.55, wspace=0.32)
+
     reg_lbl = (f'M1: {"Líder" if res["es_l1"] else "Seguidor"}  |  '
                f'M2: {"Líder" if res["es_l2"] else "Seguidor"}')
     pais_disp = NOMBRES_PAIS.get(pais_key, pais_key.title())
@@ -554,6 +664,7 @@ def fig_escenario(pais_key, motor_vis, n_years, d_stk_abs, d_shk_abs):
     def _ax_traj(row, hist, iner, scen, s_lo, s_hi, ylab, titulo, dif_str, motor):
         ax  = fig.add_subplot(gspec[row, :2])
         axd = fig.add_subplot(gspec[row, 2])
+
         xp     = [ano_b] + f_anos
         i_plot = np.insert(iner, 0, hist[-1])
         s_plot = np.insert(scen, 0, hist[-1])
@@ -565,6 +676,7 @@ def fig_escenario(pais_key, motor_vis, n_years, d_stk_abs, d_shk_abs):
         ax.axvline(ano_b + 0.5, color="#9ca3af", ls=":", lw=1.1, zorder=3)
         ax.plot(xp, i_plot, "--", color=C_INER, lw=2.0,
                 label=f"Sin política (tendencia {DRIFT_WIN}a)", zorder=4)
+
         if any_c:
             ax.plot(xp, s_plot, "-o", color=C_SCEN, lw=2.5, ms=4.5,
                     label="Escenario simulado", zorder=6)
@@ -618,6 +730,7 @@ def fig_escenario(pais_key, motor_vis, n_years, d_stk_abs, d_shk_abs):
             vshk  = [v["shock"]    for _, v in items]
             vfb   = [v["feedback"] for _, v in items]
             vtot  = [v["total"]    for _, v in items]
+
             x = np.arange(len(PALANCAS)); w = 0.26
             axd.bar(x - w, vstk, w, label="Sostenido\n(acumulado)",
                     color=C_STK, alpha=0.85, edgecolor="white", linewidth=0.5)
@@ -658,8 +771,8 @@ def fig_escenario(pais_key, motor_vis, n_years, d_stk_abs, d_shk_abs):
     if motor_vis == "AMBOS":
         ax_sp  = fig.add_subplot(gspec[2, :2])
         ax_ctx = fig.add_subplot(gspec[2, 2])
-        any_stk = any(abs(d_stk[p]) > 0.01 for p in PALANCAS)
 
+        any_stk = any(abs(d_stk[p]) > 0.01 for p in PALANCAS)
         if any_c and any_stk:
             sp = res["spillovers"]
             noms_w = list(sp.keys())
@@ -698,6 +811,7 @@ def fig_escenario(pais_key, motor_vis, n_years, d_stk_abs, d_shk_abs):
         ctx_ok = False
         anos_int = [int(y) for y in anos_h]
         tick_step = max(1, len(anos_int) // 6)
+
         if COL_PIB and COL_PIB in df_p.columns:
             pib_v = df_p[COL_PIB].ffill().values
             pib_med = float(np.nanmedian(pib_v))
@@ -714,6 +828,7 @@ def fig_escenario(pais_key, motor_vis, n_years, d_stk_abs, d_shk_abs):
             ax_ctx.set_ylabel(pib_lbl, fontsize=8, color="#1e6091")
             ax_ctx.tick_params(axis="y", labelcolor="#1e6091", labelsize=7)
             ctx_ok = True
+
         if COL_TELEC and COL_TELEC in df_p.columns:
             tel_v = df_p[COL_TELEC].ffill().values
             tel_med = float(np.nanmedian(tel_v))
@@ -732,6 +847,7 @@ def fig_escenario(pais_key, motor_vis, n_years, d_stk_abs, d_shk_abs):
             l2, lb2 = ax2t.get_legend_handles_labels()
             ax_ctx.legend(l1 + l2, lb1 + lb2, fontsize=7, loc="upper left")
             ctx_ok = True
+
         if ctx_ok:
             ax_ctx.set_title(
                 "Contexto macroeconómico\n(variables de control — fijas)",
@@ -786,14 +902,18 @@ def fig_comparativo(pais_key_ref, n_years, d_stk_abs, d_shk_abs):
         d_stk = {p: _stk_to_eff_pct(p, d_stk_abs[p], bv_pk[p]) for p in PALANCAS}
         d_shk = {p: _shk_to_eff_pct(p, d_shk_abs[p], bv_pk[p]) for p in PALANCAS}
         r = simular(dfp, d_stk, d_shk, n_years, pk, n_boot=300, seed=7)
+
         pper_i = np.expm1(r["lp_i"]); pper_s = np.expm1(r["lp_s"])
         lc_i   = inv_logit_pct(r["ll_i"]); lc_s = inv_logit_pct(r["ll_s"])
+
         dif_pp_abs = pper_s[-1] - pper_i[-1]
         dif_lc     = lc_s[-1] - lc_i[-1]
         pper_base  = float(dfp[COL_PPER].clip(lower=0).iloc[-1])
         lc_base    = float(dfp[COL_SHARE].iloc[-1])
+
         pp_abs_b = r["blp_lvl"][:, -1] - pper_i[-1]
         lc_b     = r["bll_pct"][:, -1] - lc_i[-1]
+
         resultados.append(dict(
             pais=pk, nombre=NOMBRES_PAIS.get(pk, pk.title()),
             dif_pp_abs=dif_pp_abs, dif_lc=dif_lc,
@@ -815,6 +935,7 @@ def fig_comparativo(pais_key_ref, n_years, d_stk_abs, d_shk_abs):
     ax1 = fig.add_subplot(gs[0, 0])
     ax2 = fig.add_subplot(gs[0, 1])
     ax3 = fig.add_subplot(gs[1, :])
+
     fig.suptitle(
         f'Comparativo Multi-País  ·  Horizonte {n_years} año{"s" if n_years > 1 else ""}\n'
         f"Misma intervención aplicada simultáneamente a los 11 países del panel",
@@ -865,9 +986,10 @@ def fig_comparativo(pais_key_ref, n_years, d_stk_abs, d_shk_abs):
           "Patentes adicionales vs inercia",
           fmt="{:+.0f}", anno_suffix=" pat.")
     ax1.text(0.02, 0.01,
-             "* Valores negativos: la intervención reduce patentes vs inercia (θ_LíderM1 < 0)",
+             "* Valores negativos: la intervención reduce patentes vs inercia (θ_LID M1 < 0)",
              transform=ax1.transAxes, fontsize=7.0, color="#6b7280",
              style="italic", va="bottom")
+
     _barh(ax2, df_m2, "dif_lc", "lc_lo", "lc_hi", LIDERES_M2,
           f"Cambio en Share de Energía Limpia\nt+{n_years} (puntos porcentuales)",
           "Δ Share LC (pp)",
@@ -940,6 +1062,7 @@ def fig_comparativo(pais_key_ref, n_years, d_stk_abs, d_shk_abs):
     )
     ax3.grid(True, ls=":", alpha=0.30)
     ax3.tick_params(labelsize=9)
+
     _xr = _xlim_r - _xlim_l; _yr = _ylim_t - _ylim_b
     _qt = dict(fontsize=8, style="italic", ha="center", va="center", zorder=2)
     ax3.text(_xlim_l + _xr * 0.78, _ylim_b + _yr * 0.90,
@@ -951,6 +1074,7 @@ def fig_comparativo(pais_key_ref, n_years, d_stk_abs, d_shk_abs):
              color="#92400e", **_qt)
     ax3.text(_xlim_l + _xr * 0.22, _ylim_b + _yr * 0.10,
              "Baja innovación\nBaja descarbonización", color="#991b1b", **_qt)
+
     ax3.legend(handles=[
         mpatches.Patch(color="#b45309", label="★ Líder M1 + M2"),
         mpatches.Patch(color="#1e6091", label="◆ Líder Innovación (M1)"),
@@ -971,6 +1095,7 @@ def generar_pdf_bytes(meta, fig_scen, fig_comp=None) -> bytes:
     """Genera el PDF y retorna los bytes (adaptado para Streamlit)."""
     if fig_scen is None:
         return None
+
     pais_key  = meta.get("pais_key", "pais")
     pais_disp = meta.get("pais_disp", pais_key)
     n_years   = meta.get("n_years", 5)
@@ -1021,34 +1146,51 @@ RESULTADOS PRINCIPALES:
   Energía Limpia / Share LC:   {dif_lc:+.2f} pp vs inercia
 
 MODELO:  Panel FE + Driscoll-Kraay (BW=4) + DML Secuencial
-         θ heterogéneos v11 S3b — Clasificación motor-específica (mediana)
+         θ heterogéneos S3b — Clasificación motor-específica (mediana del panel)
+         θ_LID con SE exacta S3b-LID:
+           Var(θ_LID) = Var(SEG) + Var(ADJ) + 2·Cov(SEG, ADJ)
          Bootstrap paramétrico N=2,000 — Seed=42 — IC 95%
 
 REFERENCIAS METODOLÓGICAS CENTRALES:
-  Driscoll & Kraay (1998)   —  SE robusta a dependencia seccional cruzada
-  Chernozhukov et al. (2018)—  Double/Debiased Machine Learning
-  Preacher & Hayes (2008)   —  Mediación por bootstrap paramétrico
-  Abramovitz (1986)         —  Convergencia condicional (catch-up)
-  Unruh (2000)              —  Carbon lock-in en trayectorias tecnológicas
-  Fagerberg & Srholec (2008)—  Capacidad tecnológica y desarrollo
-  Mazzucato & Penna (2016)  —  Financiamiento público de misión
+  Driscoll & Kraay (1998)    —  SE robusta a dependencia seccional cruzada
+  Chernozhukov et al. (2018) —  Double/Debiased Machine Learning
+  Preacher & Hayes (2008)    —  Mediación por bootstrap paramétrico
+  Cameron, Gelbach & Miller (2008) — Wild cluster bootstrap, pocos clusters
+  MacKinnon & Webb (2018)    —  Pesos de seis puntos con G pequeño
+  Abramovitz (1986)          —  Convergencia condicional (catch-up)
+  Unruh (2000)               —  Carbon lock-in en trayectorias tecnológicas
+  Fagerberg & Srholec (2008) —  Capacidad tecnológica y desarrollo
+  Mazzucato & Penna (2016)   —  Financiamiento público de misión
 
-HALLAZGOS CENTRALES DE LA TESIS (v11):
-  H1  Catch-Up GIDE (M1-SEG):   θ = +1.161*    (Abramovitz 1986 confirmado)
-  H2  Dirty Finance (M1-Cred):  θ_SEG = -0.829***    θ_LID ≈ 0
-  H3  Green Crowding-Out (M2):  θ_LID = -1.081**    [LOO: -0.972 a -1.093]
+HALLAZGOS CENTRALES DE LA TESIS:
+  H1  Catch-Up GIDE (M1-SEG):   θ = +1.161*      (Abramovitz 1986)
+      en países líderes:        θ_LID = -0.231 n.s.  → saturación
+  H2  Dirty Finance (M1-Cred):  θ_SEG = -0.829***    θ_LID = +0.053 n.s.
+  H3  Green Crowding-Out (M2):  θ_LID = -1.081***    Wald χ²(1)=14.32, p=0.0002
+                                [LOO líderes M2: -0.972 a -1.093]
   H4  Paradoja del Líder:       Alemania y Francia únicos líderes en ambos motores
-  H5  IED Saturación (M2-SEG):  θ = +0.188*    θ_LID ≈ 0
+  H5  IED Saturación (M2-SEG):  θ = +0.188*      θ_LID = -0.016 n.s.
+
+ALCANCE DE LA INFERENCIA:
+  · Tras corrección FDR solo M2-Crédito es confirmatorio (p_BH=0.0008***);
+    M1-GIDE queda como sugestivo (p_BH=0.0744*).
+  · Wild cluster bootstrap (G=11, Rademacher exacto sobre 2^11 patrones):
+    8 coeficientes de la Capa 2 sobreviven, 1 se revierte.
+  · Bajo un criterio de clasificación alternativo (GIDE 2008-2010,
+    pre-determinado) solo 1 de 8 efectos permanece estable (Δ<20%).
+  · Mediación GIDE→patentes→ShareLC: a·b = +0.0315, IC 90% [-0.0002, +0.0774],
+    contiene el cero. Canal sugestivo, no confirmado.
 
 {'─' * 72}
 Generado el {datetime.now().strftime('%d de %B de %Y, %H:%M')}
-Simulador Causal — Streamlit Community Cloud
+Simulador Causal {APP_VERSION} · Replication package {PIPELINE_VER}
 Tesis de Maestría · SNI y Transición Energética Baja en Carbono
 Autor: Angel A. Ruiz Muñiz  ·  UASLP / SECIHTI
 """
         ax_txt.text(0.0, 1.0, summary, transform=ax_txt.transAxes,
                     fontsize=8.5, va="top", ha="left",
                     fontfamily="monospace", color="#1b3a4b")
+
         fig_txt.suptitle(
             f"Reporte de Escenario — {pais_disp}  ·  {n_years} años",
             fontsize=12, fontweight="bold", color="#1b3a4b", y=0.98
@@ -1230,7 +1372,6 @@ CUSTOM_CSS = """
     padding-bottom: 2rem !important;
     max-width: 1400px !important;
 }
-
 /* Header hero */
 .sim-hero {
     background: linear-gradient(135deg, #0d1b2a 0%, #1b3a4b 50%, #1e6091 100%);
@@ -1254,7 +1395,6 @@ CUSTOM_CSS = """
     line-height: 1.65;
     color: #a8d8ea;
 }
-
 /* Cards KPI */
 .kpi-card {
     padding: 16px;
@@ -1262,12 +1402,10 @@ CUSTOM_CSS = """
     box-shadow: 0 2px 8px rgba(0,0,0,0.06);
     margin: 8px 0;
 }
-
 /* Sliders styling */
 .stSlider [data-baseweb="slider"] > div > div > div {
     background-color: #00897b !important;
 }
-
 /* Tabs */
 .stTabs [data-baseweb="tab-list"] {
     gap: 4px;
@@ -1284,7 +1422,6 @@ CUSTOM_CSS = """
     color: white !important;
     font-weight: 700;
 }
-
 /* Botones */
 .stButton > button {
     border-radius: 8px;
@@ -1295,7 +1432,6 @@ CUSTOM_CSS = """
     transform: translateY(-1px);
     box-shadow: 0 4px 12px rgba(0,0,0,0.12);
 }
-
 /* Container box para panel de controles */
 .control-box {
     background: #f8fafc;
@@ -1304,7 +1440,6 @@ CUSTOM_CSS = """
     border: 1px solid #e2e8f0;
     margin-bottom: 8px;
 }
-
 /* Footer */
 .footer-sim {
     text-align: center;
@@ -1330,18 +1465,27 @@ CUSTOM_CSS = """
 # K. FUNCIONES DE UI — INFORMES HTML
 # =============================================================================
 def html_regimen(pais_key):
-    _, el1 = get_theta_stk(pais_key, "M1")
-    _, el2 = get_theta_stk(pais_key, "M2")
-    h1g = THETA_STK["M1"]["GIDE"]; h2c = THETA_STK["M2"]["Credito"]
-    th1 = (h1g["seg"] + h1g["adj"]) if el1 else h1g["seg"]
-    th2 = (h2c["seg"] + h2c["adj"]) if el2 else h2c["seg"]
+    """[FIX 1/3] Muestra el θ aplicado con su SE exacta y la significancia
+    del coeficiente que de verdad se aplica."""
+    th1d, el1 = get_theta_stk(pais_key, "M1")
+    th2d, el2 = get_theta_stk(pais_key, "M2")
+    th1, se1 = th1d["GIDE"]
+    th2, se2 = th2d["Credito"]
+    sg1 = get_sig_aplicada(pais_key, "M1", "GIDE")
+    sg2 = get_sig_aplicada(pais_key, "M2", "Credito")
+
     r1c = ("#065f46", "#d1fae5", "🏆 Líder") if el1 else \
           ("#1e40af", "#dbeafe", "📈 Seguidor")
     r2c = ("#065f46", "#d1fae5", "🏆 Líder") if el2 else \
           ("#1e40af", "#dbeafe", "📈 Seguidor")
+
     paises_dobles = LIDERES_M1 & LIDERES_M2
     nota = (" <span style='color:#b45309;font-size:10px;font-weight:bold;'>"
             "★ Líder en ambos motores</span>") if pais_key in paises_dobles else ""
+
+    _lbl1 = "θ_LID · Wald χ²(1)" if el1 else "θ_SEG"
+    _lbl2 = "θ_LID · Wald χ²(1)" if el2 else "θ_SEG"
+
     return f"""
 <div style="display:flex;gap:10px;margin:8px 0;flex-wrap:wrap;">
   <div style="background:{r1c[1]};border-left:4px solid {r1c[0]};
@@ -1349,7 +1493,8 @@ def html_regimen(pais_key):
     <b style="color:{r1c[0]};font-size:12.5px;">M1 · Innovación: {r1c[2]}{nota}</b><br>
     <span style="font-size:11px;color:#374151;">
       θ_GIDE aplicado = <b>{th1:+.4f}</b>
-      {'(SEG+ADJ)' if el1 else '(SEG)'}
+      <span style="color:{SIG_COL.get(sg1, '#6b7280')};font-weight:bold;">{sg1}</span>
+      &nbsp;·&nbsp; SE {se1:.4f} &nbsp;({_lbl1})
     </span>
   </div>
   <div style="background:{r2c[1]};border-left:4px solid {r2c[0]};
@@ -1357,7 +1502,8 @@ def html_regimen(pais_key):
     <b style="color:{r2c[0]};font-size:12.5px;">M2 · Descarbonización: {r2c[2]}</b><br>
     <span style="font-size:11px;color:#374151;">
       θ_Crédito aplicado = <b>{th2:+.4f}</b>
-      {'(SEG+ADJ)' if el2 else '(SEG)'}
+      <span style="color:{SIG_COL.get(sg2, '#6b7280')};font-weight:bold;">{sg2}</span>
+      &nbsp;·&nbsp; SE {se2:.4f} &nbsp;({_lbl2})
     </span>
   </div>
 </div>"""
@@ -1409,6 +1555,7 @@ def html_informe(meta) -> str:
     if meta.get("error"):
         return (f"<div style='color:#991b1b;padding:12px;background:#fee2e2;"
                 f"border-radius:6px;'>{meta['error']}</div>")
+
     if not meta["any_c"]:
         return (
             "<div style='padding:14px;background:#fff8e1;border-left:4px solid #f9a825;"
@@ -1420,6 +1567,8 @@ def html_informe(meta) -> str:
         )
 
     dif_pp = meta["dif_pp"]; dif_lc = meta["dif_lc"]
+    pais_key = meta["pais_key"]
+
     ic_pp_lo = np.percentile(
         ((meta["res"]["blp_lvl"][:, -1] - meta["pper_i_last"]) /
          max(meta["pper_i_last"], 0.1)) * 100.0, 2.5)
@@ -1467,8 +1616,9 @@ def html_informe(meta) -> str:
         es_lid = meta["es_l1"] if motor == "M1" else meta["es_l2"]
         for p in PALANCAS:
             total = td_m.get(p, {}).get("total", 0)
-            _sig_perm = (THETA_STK[motor][p]["sig_adj"]
-                         if es_lid else THETA_STK[motor][p]["sig_seg"])
+            # [FIX 3] Para líderes se reporta la significancia del Wald χ²(1)
+            # sobre θ_LID, no la del ajuste diferencial.
+            _sig_perm = get_sig_aplicada(pais_key, motor, p)
             cs = ABS_STK_CFG[p]; ch = ABS_SHK_CFG[p]
             v_sld = meta["d_stk"][p]; v_shk = meta["d_shk"][p]
             v_bas = meta["bv"][p] / cs["scale"]
@@ -1487,6 +1637,7 @@ def html_informe(meta) -> str:
   <td>{delta:+.2f}</td><td>{imp_txt}</td>
   <td style='font-weight:bold;color:{"#065f46" if total>=0 else "#991b1b"};'>{total:+.4f}</td>
 </tr>"""
+
     tabla_html = f"""
 <style>
   .tbl-sim{{border-collapse:collapse;width:100%;font-size:11.5px;
@@ -1516,6 +1667,8 @@ def html_informe(meta) -> str:
   🏆 L = país líder en ese motor · 📈 S = seguidor ·
   <b>Nivel objetivo</b>: valor absoluto fijado durante toda la proyección ·
   <b>Δ vs base</b>: diferencia respecto al último dato observado del país ·
+  <b>θ sostenido</b>: para seguidores es θ_SEG; para líderes es θ_LID = θ_SEG + θ_ADJ,
+  con la significancia del Wald χ²(1) sobre H0: θ_LID = 0 (S3b-LID) ·
   Solo M2-Crédito es confirmatorio tras corrección múltiple (p_BH=0.0008***);
   M1-GIDE es sugestivo (p_BH=0.074*).
 </div>
@@ -1644,18 +1797,18 @@ def calculate_scenario_sexenal(esc_id):
 # M. HEADER Y ESTRUCTURA PRINCIPAL
 # =============================================================================
 init_state()
-
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-st.markdown("""
+st.markdown(f"""
 <div class="sim-hero">
   <h2>🌿 Simulador Causal de Política Pública · Innovación y Transición Energética</h2>
   <p>
-    θ heterogéneos v11 (líder / seguidor por motor) ·
+    θ heterogéneos S3b (líder / seguidor por motor, SE exacta S3b-LID) ·
     Panel FE + Driscoll–Kraay + DML Secuencial ·
     Canal GIDE → Patentes → ShareLC (Preacher &amp; Hayes 2008) ·
     Bootstrap IC 95% · Comparativo 11 países · Análisis sexenal México · PDF export
-    <br><em style="opacity:0.75;">Tesis de Maestría · UASLP / SECIHTI · Angel A. Ruiz Muñiz</em>
+    <br><em style="opacity:0.75;">Tesis de Maestría · UASLP / SECIHTI · Angel A. Ruiz Muñiz
+    · {APP_VERSION} sobre replication package {PIPELINE_VER}</em>
   </p>
 </div>
 """, unsafe_allow_html=True)
@@ -1666,7 +1819,6 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "🇲🇽 México · Análisis sexenal",
     "📚 Metodología y referencias",
 ])
-
 
 # =============================================================================
 # TAB 1 — ESCENARIO INDIVIDUAL
@@ -1684,6 +1836,7 @@ with tab1:
             _pais_idx = pais_keys.index(st.session_state.pais_key)
         except ValueError:
             _pais_idx = pais_keys.index("mexico")
+
         pais_sel_name = st.selectbox(
             "País", pais_names, index=_pais_idx, key="_pais_widget",
             help=(
@@ -1691,7 +1844,8 @@ with tab1:
                 "(2007–2024). Al cambiar de país, los valores baseline "
                 "de los sliders se resetean al último dato observado del "
                 "país elegido. Los regímenes líder/seguidor por motor "
-                "también se actualizan automáticamente."
+                "también se actualizan automáticamente, y con ellos el θ "
+                "aplicado y su error estándar."
             ),
         )
         pais_sel_key = pais_keys[pais_names.index(pais_sel_name)]
@@ -1780,7 +1934,9 @@ with tab1:
             parte del último valor observado del país.<br>
             <b style="color:#92400e;">● IMPULSO</b> — delta puntual solo en año 1.
             <br><span style="font-size:11px;color:#6b7280;">
-            Los θ bajo cada slider son coeficientes causales del modelo (v11 S3b).
+            Los θ bajo cada slider son coeficientes causales del modelo (S3b).
+            El θ que se aplica al país seleccionado aparece en el panel de régimen:
+            para líderes es θ_LID con la SE exacta de S3b-LID, no la suma naive.
             Solo M2-Crédito es confirmatorio tras corrección múltiple
             (p<sub>BH</sub>=0.0008***).</span>
             </div>""",
@@ -1792,11 +1948,15 @@ with tab1:
         for p in PALANCAS:
             cs = ABS_STK_CFG[p]; ch = ABS_SHK_CFG[p]
             h1 = THETA_STK["M1"][p]; h2 = THETA_STK["M2"][p]
+            l1 = THETA_LID["M1"][p]; l2 = THETA_LID["M2"][p]
             sh1 = THETA_SHK["M1"][p]; sh2 = THETA_SHK["M2"][p]
 
             col_stk, col_shk = st.columns(2, gap="small")
 
             with col_stk:
+                # [FIX 1/3] LID se muestra desde THETA_LID: el θ es el mismo que
+                # antes (seg+adj) pero la significancia es la del Wald sobre
+                # θ_LID, no la del ajuste diferencial.
                 st.markdown(
                     f"<div style='padding:2px 0;font-size:11.5px;'>"
                     f"<b style='color:#065f46;'>↑ SOSTENIDO · {NOM_PAL[p]}</b>"
@@ -1806,12 +1966,12 @@ with tab1:
                     f"<br><span style='font-size:10px;color:#4b5563;'>"
                     f"M1: SEG={h1['seg']:+.3f}"
                     f"<span style='color:{SIG_COL[h1['sig_seg']]};font-weight:bold;'> {h1['sig_seg']}</span>"
-                    f" | LID={h1['seg']+h1['adj']:+.3f}"
-                    f"<span style='color:{SIG_COL[h1['sig_adj']]};font-weight:bold;'> {h1['sig_adj']}</span>"
+                    f" | LID={l1['theta']:+.3f}"
+                    f"<span style='color:{SIG_COL[l1['sig']]};font-weight:bold;'> {l1['sig']}</span>"
                     f"&emsp;M2: SEG={h2['seg']:+.3f}"
                     f"<span style='color:{SIG_COL[h2['sig_seg']]};font-weight:bold;'> {h2['sig_seg']}</span>"
-                    f" | LID={h2['seg']+h2['adj']:+.3f}"
-                    f"<span style='color:{SIG_COL[h2['sig_adj']]};font-weight:bold;'> {h2['sig_adj']}</span>"
+                    f" | LID={l2['theta']:+.3f}"
+                    f"<span style='color:{SIG_COL[l2['sig']]};font-weight:bold;'> {l2['sig']}</span>"
                     f"</span></div>",
                     unsafe_allow_html=True,
                 )
@@ -1830,10 +1990,11 @@ with tab1:
                         f"causales estimadas con Panel FE + Driscoll-Kraay "
                         f"(BW=4). Solo M2-Crédito supera la corrección "
                         f"Benjamini-Hochberg (p_BH=0.0008***); M1-GIDE es "
-                        f"sugestivo (p_BH=0.074*). La notación LID/SEG "
-                        f"indica el coeficiente aplicado según el país sea "
-                        f"líder o seguidor en el motor (M1 patentes o M2 "
-                        f"descarbonización)."
+                        f"sugestivo (p_BH=0.074*). SEG es el coeficiente de "
+                        f"países seguidores; LID es el total líder "
+                        f"θ_SEG + θ_ADJ, cuya significancia proviene del Wald "
+                        f"χ²(1) con la varianza exacta "
+                        f"Var(SEG)+Var(ADJ)+2·Cov(SEG,ADJ) de S3b-LID."
                     ),
                 )
 
@@ -1868,8 +2029,10 @@ with tab1:
                         f"θ_shock provienen del DML Secuencial (Chernozhukov "
                         f"et al., 2018) — son pooled y direccionalmente "
                         f"informativos pero con SE mayores que los de largo "
-                        f"plazo. Útil para simular estímulos coyunturales "
-                        f"aislados (paquetes fiscales, transferencias)."
+                        f"plazo. Con G=11 clusters su inferencia analítica es "
+                        f"optimista: el wild cluster bootstrap de S7 revierte "
+                        f"uno de estos coeficientes. Útil para simular "
+                        f"estímulos coyunturales aislados."
                     ),
                 )
 
@@ -1906,7 +2069,6 @@ with tab1:
 
         st.markdown("### 📄 Exportar reporte")
         col_pdf, col_msg = st.columns([1, 3])
-
         if col_pdf.button("Generar PDF", type="primary",
                           use_container_width=True, key="gen_pdf_1"):
             with st.spinner("Compilando PDF (2–4 páginas)..."):
@@ -1938,7 +2100,6 @@ with tab1:
             "**▶ CALCULAR ESCENARIO** para ver la trayectoria proyectada."
         )
 
-
 # =============================================================================
 # TAB 2 — COMPARATIVO MULTI-PAÍS
 # =============================================================================
@@ -1952,7 +2113,6 @@ with tab2:
     )
 
     col_c, col_help = st.columns([1, 2])
-
     if col_c.button("🌍 GENERAR COMPARATIVO", type="primary",
                     use_container_width=True, key="btn_comp"):
         with st.spinner(
@@ -1985,14 +2145,14 @@ with tab2:
             margin-top:6px;'>
             <b>Nota metodológica.</b> El comparativo aplica exactamente la
             misma intervención a los 11 países del panel, respetando el régimen
-            líder/seguidor de cada uno por motor. El Panel 3 traza el mapa
-            histórico (log-patentes vs % Share LC) y visualiza la
+            líder/seguidor de cada uno por motor: los países líderes reciben
+            θ_LID con la SE exacta de S3b-LID, los seguidores θ_SEG. El Panel 3
+            traza el mapa histórico (log-patentes vs % Share LC) y visualiza la
             <b>H4 Paradoja del Líder</b>: alta innovación no implica alta
             descarbonización. Solo Alemania y Francia lideran en ambos motores.
             IC 95% con bootstrap de 300 réplicas por país.</div>""",
             unsafe_allow_html=True,
         )
-
 
 # =============================================================================
 # TAB 3 — MÉXICO · ANÁLISIS SEXENAL
@@ -2016,11 +2176,12 @@ with tab3:
     st.warning(
         "**Advertencia metodológica.** Los \"contrafactuales sexenales\" "
         "simulan la aplicación de la orientación de política del sexenio X "
-        "al horizonte proyectivo actual, usando los coeficientes θ v11 estimados "
+        "al horizonte proyectivo actual, usando los coeficientes θ estimados "
         "sobre el panel 2007–2024. Un contrafactual retrospectivo estricto "
         "(¿qué habría pasado si Calderón hubiera cumplido el 1 % GIDE en "
         "2007–2012?) requeriría re-estimar el modelo con datos alterados y "
-        "no es alcanzable desde esta interfaz."
+        "no es alcanzable desde esta interfaz. México es país seguidor en "
+        "ambos motores, así que recibe θ_SEG en las cuatro palancas."
     )
 
     for sx in SEXENIOS_MX:
@@ -2035,6 +2196,7 @@ with tab3:
                 f"margin-bottom:12px;'>{sx['contexto_html']}</div>",
                 unsafe_allow_html=True,
             )
+
             for esc in sx["escenarios"]:
                 st.markdown(render_escenario_html(sx, esc), unsafe_allow_html=True)
                 col_a, col_b = st.columns(2)
@@ -2085,6 +2247,7 @@ with tab3:
             f"line-height:1.55;'>{esc['descripcion']}</div></div>",
             unsafe_allow_html=True,
         )
+
         st.pyplot(res["fig"], clear_figure=False)
         st.markdown(html_informe(res["meta"]), unsafe_allow_html=True)
 
@@ -2101,7 +2264,6 @@ with tab3:
             "Escenario individual."
         )
 
-
 # =============================================================================
 # TAB 4 — METODOLOGÍA
 # =============================================================================
@@ -2112,7 +2274,6 @@ with tab4:
 Este simulador operacionaliza los coeficientes causales estimados en la tesis
 de maestría **"The Leader's Paradox in Clean Technology: Catch-Up Returns to
 Public R&D and Green Crowding-Out Across Heterogeneous Economies"**.
-
 La arquitectura es un modelo híbrido en tres capas complementarias:
 
 **Capa 1 · Panel FE + Driscoll–Kraay (largo plazo, evidencia primaria).**
@@ -2128,11 +2289,32 @@ regresión sobre residuos limpios: ε_Y = θ · ε_D + η.
 
 **Capa 3 · Mediación bootstrap (canal GIDE → Patentes → ShareLC).**
 Bootstrap paramétrico Monte Carlo con N=10,000 réplicas siguiendo Preacher &
-Hayes (2008). Efecto indirecto, Bootstrap mediation (a·b = +0.032, mediated share 7.6%, 90% CI including zero)
+Hayes (2008). Efecto indirecto a·b = +0.0315, proporción mediada 7.6%,
+IC 95% [-0.0049, +0.0904] e IC 90% [-0.0002, +0.0774]: **ambos intervalos
+contienen el cero**. Los dos tramos del canal son significativos por separado
+(γ = 0.1077, p = 0.0376), pero el producto no se distingue de cero con este
+tamaño de panel. El canal se conserva en el motor porque γ es el mejor
+estimador puntual disponible del tramo b, pero el efecto indirecto debe leerse
+como sugestivo, no como un hallazgo confirmado.
+
+### Varianza del efecto total líder
+
+Para los países clasificados como líderes, el coeficiente que se aplica es
+θ_LID = θ_SEG + θ_ADJ. Como es una combinación lineal de dos coeficientes
+correlacionados, su varianza incluye el término cruzado:
+
+`Var(θ_LID) = Var(θ_SEG) + Var(θ_ADJ) + 2·Cov(θ_SEG, θ_ADJ)`
+
+La covarianza es negativa en 7 de las 8 combinaciones palanca × motor, de modo
+que omitirla no produce un intervalo conservador sino uno equivocado, más ancho
+de lo que corresponde. Para M1-GIDE la diferencia es de 1.0514 a 0.1555, un
+intervalo 6.8 veces más ancho. Este simulador usa las SE exactas derivadas de
+la matriz de covarianzas Driscoll–Kraay completa, que son las mismas que
+sostienen la Figura 2 del artículo y los estadísticos Wald χ²(1) reportados.
 
 ### Heterogeneidad Líder / Seguidor
 
-Clasificación *data-driven* por mediana del panel (spec S3b v11):
+Clasificación *data-driven* por mediana del panel:
 
 | Motor | Líderes | Seguidores |
 |-------|---------|------------|
@@ -2142,12 +2324,32 @@ Clasificación *data-driven* por mediana del panel (spec S3b v11):
 Solo Alemania y Francia lideran ambos motores simultáneamente — el resto
 exhibe la Paradoja del Líder (Innovation Leader ≠ Decarbonization Leader).
 
+### Efectos totales líder con su prueba Wald
+
+| Motor | Palanca | θ_LID | SE exacta | Wald χ²(1) | p | Sig. |
+|-------|---------|-------|-----------|------------|---|------|
+| M1 | GIDE | −0.2309 | 0.1555 | 2.203 | 0.1377 | n.s. |
+| M1 | Crédito | +0.0531 | 0.2106 | 0.064 | 0.8009 | n.s. |
+| M1 | IED | −0.1112 | 0.0670 | 2.755 | 0.0969 | * |
+| M1 | Pagos PI | −0.0640 | 0.0931 | 0.472 | 0.4923 | n.s. |
+| M2 | GIDE | +0.0929 | 0.9177 | 0.010 | 0.9194 | n.s. |
+| M2 | Crédito | −1.0811 | 0.2857 | 14.317 | 0.0002 | *** |
+| M2 | IED | −0.0156 | 0.0350 | 0.198 | 0.6567 | n.s. |
+| M2 | Pagos PI | −0.1120 | 0.0821 | 1.863 | 0.1722 | n.s. |
+
+El green crowding-out del crédito privado en países líderes en descarbonización
+(M2) es el único efecto total líder que sobrevive con holgura, y es también el
+único de los ocho tests primarios que sobrevive la corrección Benjamini–Hochberg
+(p_BH = 0.0008***).
+
 ### Referencias metodológicas (verificables)
 
 - Abramovitz, M. (1986). Catching up, forging ahead, and falling behind. *The Journal of Economic History, 46*(2), 385–406. https://doi.org/10.1017/S0022050700046209
+- Cameron, A. C., Gelbach, J. B., & Miller, D. L. (2008). Bootstrap-based improvements for inference with clustered errors. *The Review of Economics and Statistics, 90*(3), 414–427. https://doi.org/10.1162/rest.90.3.414
 - Chernozhukov, V., Chetverikov, D., Demirer, M., Duflo, E., Hansen, C., Newey, W., & Robins, J. (2018). Double/debiased machine learning for treatment and structural parameters. *The Econometrics Journal, 21*(1), C1–C68. https://doi.org/10.1111/ectj.12097
 - Driscoll, J. C., & Kraay, A. C. (1998). Consistent covariance matrix estimation with spatially dependent panel data. *Review of Economics and Statistics, 80*(4), 549–560. https://doi.org/10.1162/003465398557825
 - Fagerberg, J., & Srholec, M. (2008). National innovation systems, capabilities and economic development. *Research Policy, 37*(9), 1417–1435. https://doi.org/10.1016/j.respol.2008.06.003
+- MacKinnon, J. G., & Webb, M. D. (2018). The wild bootstrap for few (treated) clusters. *The Econometrics Journal, 21*(2), 114–135. https://doi.org/10.1111/ectj.12107
 - Preacher, K. J., & Hayes, A. F. (2008). Asymptotic and resampling strategies for assessing and comparing indirect effects in multiple mediator models. *Behavior Research Methods, 40*(3), 879–891. https://doi.org/10.3758/BRM.40.3.879
 - Unruh, G. C. (2000). Understanding carbon lock-in. *Energy Policy, 28*(12), 817–830. https://doi.org/10.1016/S0301-4215(00)00070-7
 
@@ -2164,8 +2366,24 @@ exhibe la Paradoja del Líder (Innovation Leader ≠ Decarbonization Leader).
 4. **Un único bootstrap paramétrico**: el IC 95% supone normalidad de los θ.
    La inferencia principal de la tesis se apoya en Driscoll–Kraay, no en el
    bootstrap del simulador — este último es una herramienta de comunicación.
-5. **J-curve capturada estáticamente**: la temporalidad no-lineal de la relación
-   GIDE → Patentes → Share LC (siembra e cosecha diferida en el sentido de
+5. **Pocos clusters en la Capa 2**: con G = 11 países, la SE cluster-robusta
+   está sesgada a la baja. El wild cluster bootstrap del pipeline (Rademacher
+   por enumeración exhaustiva de los 2^11 = 2048 patrones de signo, más pesos
+   Webb de seis puntos) confirma 8 de los coeficientes significativos de corto
+   plazo y revierte 1. Los θ de impulso deben leerse con esa reserva.
+6. **Sensibilidad del criterio de regímenes**: bajo un criterio de
+   clasificación alternativo y pre-determinado (GIDE promedio 2008–2010, exógeno
+   a ambas variables dependientes), solo 1 de los 8 efectos permanece estable
+   con un cambio menor al 20%. La partición líder/seguidor por mediana de la
+   variable dependiente es defendible pero no es la única posible, y los
+   resultados del simulador heredan esa elección.
+7. **Robustez a la composición del panel**: excluir a Canadá — cuya serie de
+   crédito privado tiene solo dos observaciones reales y catorce años de
+   proyección lineal — refuerza todos los resultados de la Capa 1. El
+   coeficiente de once países que usa este simulador es, por tanto, el
+   conservador.
+8. **J-curve capturada estáticamente**: la temporalidad no-lineal de la relación
+   GIDE → Patentes → Share LC (siembra y cosecha diferida en el sentido de
    Popp, 2002) se aborda cualitativamente en el manuscrito, pero el modelo
    econométrico la condensa en coeficientes estáticos. Una formalización
    dinámica mediante Local Projections (Jordà, 2005) o Distributed Lag Models
@@ -2188,15 +2406,15 @@ notas de política pública, por favor cita el trabajo en formato **APA 7**:
     _cita_apa = (
         f'Ruiz Muñiz, A. A. ({DEPLOY_DATE.split()[-1]}). '
         f'*Simulador Causal de Política Pública: Innovación Renovable y '
-        f'Transición Energética Baja en Carbono* [Aplicación web]. '
+        f'Transición Energética Baja en Carbono* (Versión {APP_VERSION}) '
+        f'[Aplicación web]. '
         f'Universidad Autónoma de San Luis Potosí — SECIHTI. '
         f'https://angelruiz-simulador-causal-politicaeinversion.streamlit.app'
     )
-
     st.code(_cita_apa, language="text")
 
     st.markdown(
-        f"""
+        """
 **BibTeX** para gestores de referencias (LaTeX, Overleaf, Zotero, Mendeley):
 """
     )
@@ -2204,7 +2422,7 @@ notas de política pública, por favor cita el trabajo en formato **APA 7**:
     _cita_bib = (
         "@misc{ruiz2026simulador,\n"
         "  author       = {Ruiz Muniz, Angel A.},\n"
-        f"  title        = {{Simulador Causal de Politica Publica: "
+        "  title        = {{Simulador Causal de Politica Publica: "
         "Innovaci{\\'{o}}n Renovable y Transici{\\'{o}}n Energ{\\'{e}}tica}},\n"
         f"  year         = {{{DEPLOY_DATE.split()[-1]}}},\n"
         f"  version      = {{{APP_VERSION}}},\n"
@@ -2212,7 +2430,6 @@ notas de política pública, por favor cita el trabajo en formato **APA 7**:
         "  note         = {Aplicaci{\\'{o}}n Streamlit derivada de tesis de maestr{\\'{i}}a. UASLP/SECIHTI.},\n"
         "}"
     )
-
     st.code(_cita_bib, language="bibtex")
 
     st.markdown(
@@ -2223,14 +2440,18 @@ notas de política pública, por favor cita el trabajo en formato **APA 7**:
 Returns to Public R&D and Green Crowding-Out Across Heterogeneous Economies"*
 (manuscrito en revisión).
 
-**Datos:** Panel consolidado 2007–2024, 11 economías. Fuentes primarias:
-Banco Mundial (WDI), OECD MSTI, IRENA, Our World in Data. Disponible en el
-archivo `data.csv` del repositorio.
+**Pipeline de estimación:** replication package {PIPELINE_VER}. Los θ de este
+simulador provienen de las secciones S3b y S3b-LID de ese paquete; cualquier
+discrepancia entre ambos debe resolverse a favor del pipeline.
 
-**Licencia del código:** Lease archivo de Licencia.
+**Datos:** Panel consolidado 2007–2024, 11 economías (N = 187 en la muestra de
+estimación, tras el rezago de un periodo). Fuentes primarias: Banco Mundial
+(WDI), OECD MSTI, IRENA, Our World in Data. Disponible en el archivo `data.csv`
+del repositorio.
+
+**Licencia del código:** ver archivo de licencia del repositorio.
 """
     )
-
 
 # =============================================================================
 # FOOTER
@@ -2238,7 +2459,9 @@ archivo `data.csv` del repositorio.
 st.markdown(f"""
 <div class="footer-sim">
   Simulador Causal {APP_VERSION} · Streamlit Community Cloud  ·
-  Última actualización: {DEPLOY_DATE}<br>
-  <em>Tesis de Maestría · Angel A. Ruiz Muñiz · UASLP / SECIHTI ·
-  
+  Última actualización: {DEPLOY_DATE} ·
+  Pipeline {PIPELINE_VER}<br>
+  <em>Tesis de Maestría · Angel A. Ruiz Muñiz · UASLP / SECIHTI</em> ·
+  <a href="{GITHUB_URL}" target="_blank">Código fuente</a>
+</div>
 """, unsafe_allow_html=True)
