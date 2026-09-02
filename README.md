@@ -86,7 +86,14 @@ streamlit run streamlit_app.py
 El archivo `data.csv` contiene el panel consolidado 2007–2024 con las variables
 del pipeline econométrico. Fuentes primarias: World Bank Open Data, OECD Main
 Science and Technology Indicators, IRENA Renewable Energy Statistics, Our
-World in Data, y bases nacionales complementarias.
+World in Data, y bases nacionales complementarias. Se efectuo un Tratamiento de Datos Ausentes y Reconstrucción de Series Temporales:
+
+1. Ordenar por país y por año.
+   1. **Interpolación lineal (gap-filling)**: se aplica estrictamente a huecos internos (entre dos datos conocidos) para preservar la continuidad de corto plazo.
+   2. **Proyección de tendencia local (forecasting)**: para huecos al final de la serie, regresión lineal sobre las últimas cinco observaciones reales.
+   3. **Retro-proyección (backcasting)**: para huecos al inicio, la misma regresión corrida hacia atrás sobre las primeras cinco observaciones reales.
+2. Los valores imputados se truncan en cero para evitar negativos sin sentido económico.
+En la corrida de referencia son **131 celdas de 2 574 (5.09 % del panel)**: 129 por proyección hacia adelante y 2 hacia atrás.
 
 ## Autor
 
