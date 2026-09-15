@@ -995,95 +995,136 @@ def fig_comparativo(pais_key_ref, n_years, d_stk_abs, d_shk_abs):
           "Δ Share LC (pp)",
           fmt="{:+.2f}", anno_suffix=" pp")
 
-    _log_pats = [np.log1p(max(r["pper_base"], 0)) for _, r in df_all.iterrows()]
-    _lc_bases = [r["lc_base"]                    for _, r in df_all.iterrows()]
-    _med_lp   = float(np.median(_log_pats))
-    _med_lc   = float(np.median(_lc_bases))
-    _xlim_l, _xlim_r = min(_log_pats) - 0.3, max(_log_pats) + 0.4
-    _ylim_b, _ylim_t = max(0, min(_lc_bases) - 5), min(100, max(_lc_bases) + 5)
+    import matplotlib.patheffects as _pe
+    from matplotlib.lines import Line2D as _L2D
 
-    ax3.fill_between([_med_lp, _xlim_r], [_med_lc, _med_lc], [_ylim_t, _ylim_t],
-                     color="#d1fae5", alpha=0.18, zorder=0)
-    ax3.fill_between([_xlim_l, _med_lp], [_med_lc, _med_lc], [_ylim_t, _ylim_t],
-                     color="#dbeafe", alpha=0.18, zorder=0)
-    ax3.fill_between([_med_lp, _xlim_r], [_ylim_b, _ylim_b], [_med_lc, _med_lc],
-                     color="#fef3c7", alpha=0.28, zorder=0)
-    ax3.fill_between([_xlim_l, _med_lp], [_ylim_b, _ylim_b], [_med_lc, _med_lc],
-                     color="#fee2e2", alpha=0.15, zorder=0)
-    ax3.axvline(_med_lp, color="#9ca3af", ls="--", lw=0.9, alpha=0.7, zorder=1)
-    ax3.axhline(_med_lc, color="#9ca3af", ls="--", lw=0.9, alpha=0.7, zorder=1)
-
-    for _, row in df_all.iterrows():
-        el1  = row["pais"] in LIDERES_M1
-        el2  = row["pais"] in LIDERES_M2
-        both = el1 and el2
-        lp = np.log1p(max(row["pper_base"], 0))
-        lc = row["lc_base"]
-        if both:
-            c_dot, marker, sz, zz = "#b45309", "*", 320, 7
-        elif el1:
-            c_dot, marker, sz, zz = "#1e6091", "D", 180, 6
-        elif el2:
-            c_dot, marker, sz, zz = "#065f46", "s", 180, 6
-        else:
-            c_dot, marker, sz, zz = "#6b7280", "o", 130, 5
-        ax3.scatter(lp, lc, s=sz, c=c_dot, marker=marker,
-                    alpha=0.88, edgecolors="white", linewidths=1.4, zorder=zz)
-
-    _label_offsets = {
-        "china": (0.08, 4.0), "estados_unidos": (0.08, 4.0),
-        "japon": (-0.12, 4.5), "corea_del_sur": (0.08, -5.5),
-        "alemania": (0.08, 4.0), "francia": (0.08, -5.5),
-        "canada": (0.08, 4.0), "brasil": (0.08, -5.5),
-        "dinamarca": (0.08, -5.5), "mexico": (0.08, -5.5),
-        "chile": (0.08, 4.0),
+    _ANIO_INI_MAPA = 2008
+    _C_REG = {"ambos": "#049CBB", "patentes": "#7C3AED",
+              "descarb": "#15803D", "seguidor": "#B45309"}
+    _NOM_REG = {"ambos": "Líder en ambos", "patentes": "Solo patentes",
+                "descarb": "Solo descarbonización", "seguidor": "Seguidor en ambos"}
+    _CORTO = {"estados_unidos": "EUA", "corea_del_sur": "Corea Sur"}
+    # (punto de anclaje, dx, dy en puntos, alineación) — elegido por separación
+    _ANCLA = {
+        "china": ("fin", -8, 17, "center"), "japon": ("ini", 14, 4, "left"),
+        "estados_unidos": ("fin", 13, 6, "left"), "corea_del_sur": ("ini", -14, -1, "right"),
+        "alemania": ("fin", 14, 1, "left"), "francia": ("ini", -14, 1, "right"),
+        "dinamarca": ("fin", 14, 1, "left"), "canada": ("ini", -14, -9, "right"),
+        "brasil": ("ini", 0, 16, "center"), "chile": ("fin", 0, 16, "center"),
+        "mexico": ("fin", 15, 4, "left"),
     }
-    for _, row in df_all.iterrows():
-        lp = np.log1p(max(row["pper_base"], 0))
-        lc = row["lc_base"]
-        pk = row["pais"]; nom = row["nombre"]
-        dx, dy = _label_offsets.get(pk, (0.08, 4.0))
-        _lbl3 = f"{nom}\n({int(row['pper_base'])} pat. | {lc:.0f}% LC)"
-        ax3.annotate(_lbl3, xy=(lp, lc), xytext=(lp + dx, lc + dy),
-                     textcoords="data", fontsize=7.8, color="#1b3a4b",
-                     fontweight="500",
-                     ha="left" if dx > 0 else "right", va="center",
-                     arrowprops=dict(arrowstyle="-", color="#9ca3af",
-                                     lw=0.6, alpha=0.55, shrinkA=4, shrinkB=2))
 
-    ax3.set_xlim(_xlim_l, _xlim_r); ax3.set_ylim(_ylim_b, _ylim_t)
-    ax3.set_xlabel("Capacidad de Innovación Renovable  (log de patentes base)",
-                   fontsize=10.5)
-    ax3.set_ylabel("Participación de Energía Limpia  (%)", fontsize=10.5)
+    _logit = lambda v: np.log(np.clip(v, 0.01, 99.99) / (100 - np.clip(v, 0.01, 99.99)))
+    _inv = lambda z: 100.0 / (1.0 + np.exp(-z))
+
+
+    def _bezier3(p0, pm, p2, n=60):
+        """Bézier cuadrática que pasa exactamente por pm en t = 0.5."""
+        P0, PM, P2 = (np.array([np.log1p(q[0]), q[1]]) for q in (p0, pm, p2))
+        P1 = 2 * PM - 0.5 * P0 - 0.5 * P2
+        t = np.linspace(0, 1, n)[:, None]
+        B = (1 - t) ** 2 * P0 + 2 * (1 - t) * t * P1 + t ** 2 * P2
+        return B[:, 0], B[:, 1]
+
+
+    # Posiciones en el MISMO espacio que usa la clasificación del modelo:
+    # promedio del periodo de estimación de log1p(patentes) y de logit(share LC).
+    _d = df_raw[["pais", "año", COL_PPER, COL_SHARE]].dropna().sort_values(["pais", "año"])
+    _d = _d[_d["pais"].isin(df_all["pais"])]
+    _d = _d.assign(_s1=np.log1p(_d[COL_PPER].clip(lower=0)), _s2=_logit(_d[COL_SHARE]))
+    _g = (_d[_d["año"] >= _ANIO_INI_MAPA].groupby("pais")
+          .agg(s1=("_s1", "mean"), s2=("_s2", "mean")))
+    _cut1, _cut2 = float(_g["s1"].median()), float(_g["s2"].median())
+    _cut2p = _inv(_cut2)
+    _a0 = int(_d[_d["año"] >= _ANIO_INI_MAPA]["año"].min())
+    _a1 = int(_d["año"].max())
+    _ini = _d[_d["año"] == _a0].set_index("pais")
+    _fin = _d[_d["año"] == _a1].set_index("pais")
+
+    _xs, _ys = [], []
+    for _pk in _g.index:
+        _xs += [np.log1p(_ini.loc[_pk, COL_PPER]), float(_g.loc[_pk, "s1"]),
+                np.log1p(_fin.loc[_pk, COL_PPER])]
+        _ys += [_ini.loc[_pk, COL_SHARE], _inv(_g.loc[_pk, "s2"]), _fin.loc[_pk, COL_SHARE]]
+    _xl, _xr = min(_xs) - 0.55, max(_xs) + 0.75
+    _yb, _yt = max(0.0, min(_ys) - 8), min(100.0, max(_ys) + 8)
+
+    ax3.add_patch(plt.Rectangle((_xl, _yb), _cut1 - _xl, _cut2p - _yb,
+                                color="#FEF6E0", zorder=0))
+    ax3.grid(True, color="#CBD5E1", lw=0.55, zorder=0)
+    ax3.set_axisbelow(True)
+    ax3.axvline(_cut1, color="#64748B", lw=1.3, ls=(0, (6, 4)), zorder=1)
+    ax3.axhline(_cut2p, color="#64748B", lw=1.3, ls=(0, (6, 4)), zorder=1)
+
+    for _pk in _g.index:
+        _el1, _el2 = _pk in LIDERES_M1, _pk in LIDERES_M2
+        _reg = ("ambos" if (_el1 and _el2) else "patentes" if _el1
+                else "descarb" if _el2 else "seguidor")
+        _c = _C_REG[_reg]
+        _mx = _pk == "mexico"
+        _lw = 2.4 if _mx else 1.8
+        _al = 0.95 if _mx else 0.62
+
+        _p0 = (float(_ini.loc[_pk, COL_PPER]), float(_ini.loc[_pk, COL_SHARE]))
+        _pm = (float(np.expm1(_g.loc[_pk, "s1"])), float(_inv(_g.loc[_pk, "s2"])))
+        _p2 = (float(_fin.loc[_pk, COL_PPER]), float(_fin.loc[_pk, COL_SHARE]))
+
+        _bx, _by = _bezier3(_p0, _pm, _p2)
+        ax3.plot(_bx[:-6], _by[:-6], color=_c, lw=_lw, alpha=_al,
+                 solid_capstyle="round", zorder=2)
+        ax3.annotate("", xy=(_bx[-1], _by[-1]), xytext=(_bx[-7], _by[-7]),
+                     arrowprops=dict(arrowstyle="-|>", color=_c, lw=_lw,
+                                     alpha=0.95 if _mx else 0.6, mutation_scale=17),
+                     zorder=2)
+        ax3.scatter(np.log1p(_p0[0]), _p0[1], s=70, facecolors="white", edgecolors=_c,
+                    linewidths=1.8, alpha=0.95 if _mx else 0.7, zorder=3)
+        ax3.scatter(np.log1p(_pm[0]), _pm[1], s=165 if _mx else 120, marker="s",
+                    color=_c, edgecolors="white", linewidths=1.8, zorder=4)
+
+        _clave, _dx, _dy, _ha = _ANCLA.get(_pk, ("fin", 12, 8, "left"))
+        _anc = _p0 if _clave == "ini" else _p2
+        ax3.annotate(_CORTO.get(_pk, NOMBRES_PAIS.get(_pk, _pk.title())),
+                     (np.log1p(_anc[0]), _anc[1]), textcoords="offset points",
+                     xytext=(_dx, _dy), ha=_ha, va="center",
+                     fontsize=11.5 if _mx else 10.5, weight="bold" if _mx else "600",
+                     color=_c, zorder=6,
+                     path_effects=[_pe.withStroke(linewidth=3.0, foreground="white")])
+
+    # Los límites se fijan AL FINAL: así ningún trazo posterior los reescala.
+    ax3.set_xlim(_xl, _xr); ax3.set_ylim(_yb, _yt)
+    _ticks = [t for t in (0, 10, 100, 1000, 10000, 100000)
+              if _xl <= np.log1p(t) <= _xr]
+    ax3.set_xticks([np.log1p(t) for t in _ticks])
+    ax3.set_xticklabels([f"{t:,}".replace(",", " ") for t in _ticks])
+    ax3.set_xlabel("Patentes en energía renovable por año · escala log(1+x)", fontsize=10.5)
+    ax3.set_ylabel("Electricidad baja en carbono (%)", fontsize=10.5)
     ax3.set_title(
-        "Mapa de Posicionamiento Histórico — H4: Paradoja del Líder\n"
-        "Alta innovación no implica alta descarbonización",
+        "Mapa de posicionamiento — H4: Paradoja del Líder\n"
+        f"Cuadrado = promedio {_a0}–{_a1}, el valor que clasifica el régimen  ·  "
+        "la curva es esquemática, no el recorrido anual",
         fontsize=12, fontweight="bold", color="#1b3a4b"
     )
-    ax3.grid(True, ls=":", alpha=0.30)
-    ax3.tick_params(labelsize=9)
+    ax3.tick_params(labelsize=9, colors="#64748B")
+    for _s in ("top", "right"):
+        ax3.spines[_s].set_visible(False)
+    for _s in ("left", "bottom"):
+        ax3.spines[_s].set_color("#CBD5E1")
 
-    _xr = _xlim_r - _xlim_l; _yr = _ylim_t - _ylim_b
-    _qt = dict(fontsize=8, style="italic", ha="center", va="center", zorder=2)
-    ax3.text(_xlim_l + _xr * 0.78, _ylim_b + _yr * 0.90,
-             "Alta innovación\nAlta descarbonización", color="#065f46", **_qt)
-    ax3.text(_xlim_l + _xr * 0.22, _ylim_b + _yr * 0.90,
-             "Baja innovación\nAlta descarbonización", color="#1e6091", **_qt)
-    ax3.text(_xlim_l + _xr * 0.78, _ylim_b + _yr * 0.10,
-             "Alta innovación\nBaja descarbonización\n(Paradoja del Líder)",
-             color="#92400e", **_qt)
-    ax3.text(_xlim_l + _xr * 0.22, _ylim_b + _yr * 0.10,
-             "Baja innovación\nBaja descarbonización", color="#991b1b", **_qt)
-
+    _leg_reg = ax3.legend(handles=[
+        mpatches.Patch(color=_C_REG[k], label=_NOM_REG[k])
+        for k in ("ambos", "patentes", "descarb", "seguidor")],
+        fontsize=8.5, loc="upper right", framealpha=0.92, frameon=True,
+        title="Régimen motor-específico", title_fontsize=8, edgecolor="#d1d5db")
+    ax3.add_artist(_leg_reg)
     ax3.legend(handles=[
-        mpatches.Patch(color="#b45309", label="★ Líder M1 + M2"),
-        mpatches.Patch(color="#1e6091", label="◆ Líder Innovación (M1)"),
-        mpatches.Patch(color="#065f46", label="■ Líder Descarbonización (M2)"),
-        mpatches.Patch(color="#6b7280", label="● Seguidor ambos"),
-    ], fontsize=8.5, loc="upper right", framealpha=0.92, frameon=True,
-        title="Régimen motor-específico", title_fontsize=8,
+        _L2D([], [], color="#64748B", marker="o", markerfacecolor="white",
+                      markersize=7, markeredgewidth=1.6, ls="", label=str(_a0)),
+        _L2D([], [], color="#64748B", marker="s", markersize=8, ls="",
+                      markeredgecolor="white", label=f"promedio {_a0}–{_a1} (clasifica)"),
+        _L2D([], [], color="#64748B", marker=">", markersize=8, ls="",
+                      label=str(_a1))],
+        fontsize=8.5, loc="lower right", framealpha=0.92, frameon=True,
         edgecolor="#d1d5db")
-
     plt.tight_layout()
     return fig, df_all
 
